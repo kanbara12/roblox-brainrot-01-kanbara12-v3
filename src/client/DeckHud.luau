@@ -568,6 +568,10 @@ function DeckHud.onUpdate(msg)
 	elseif msg.type == "index" then
 		state.found = msg.found or {}
 		DeckHud.refreshLog()
+		-- The Log milestone line ("NEXT GOAL: Log x/10") is computed in
+		-- refreshBounties from state.found, so refresh it here too — without
+		-- this it only moved on the next snapshot or bounty completion.
+		DeckHud.refreshBounties()
 	end
 	refs.cashLabel.Text = "$" .. BootyCatalog.formatMoney(state.cash)
 	refs.incomeLabel.Text = "+$" .. BootyCatalog.formatMoney(state.income) .. "/s  x" .. tostring(state.multiplier)

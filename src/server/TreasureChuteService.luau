@@ -87,6 +87,20 @@ function TreasureChuteService.handleBuyBrainrotRequest(player, rider)
 				PirateState.broadcast(player, { type = "feed", text = "Not enough doubloons for " .. rider.def.name .. "!", color = "red" })
 				return
 			end
+			-- Ownership is recorded at purchase, not after the walk home: a
+			-- bought brainrot used to count for nothing (no slot, no Log
+			-- tile, no bounty) unless the player walked it to the pedestal
+			-- within 25s — and the 25s timeout silently refunded it. Players
+			-- who bought but did not know to walk home saw "Buy your first
+			-- brainrot 0/1" and an empty Log forever. The carry home below
+			-- is now visual only.
+			if not PirateState.assignBrainrotToSlot(player, slot, rider.def.id, rider.mutation) then
+				PirateState.addCash(player, rider.price)
+				PirateState.broadcast(player, { type = "feed", text = "Could not place " .. rider.def.name .. " — refunded!", color = "red" })
+				return
+			end
+			BountyService.addBountyProgress(player, "buy", 1)
+			BountyService.checkBountyCompletion(player)
 			TreasureChuteService.despawnConveyorBrainrot(i)
 			TreasureChuteService.carryBrainrotHome(player, rider.def, rider.mutation, slot)
 			return
@@ -94,11 +108,40 @@ function TreasureChuteService.handleBuyBrainrotRequest(player, rider)
 	end
 end
 
+-- Lands a bought brainrot's model on its pedestal. Builds a fresh model if
+-- the carry model is gone (Kraken Surge drops it mid-carry); destroys it if
+-- the player already left. The slot itself was assigned at purchase, so the
+-- model is only the visible half of an owned brainrot.
+local function landOnPedestal(player, model, def, mutation, slot)
+	local state = PirateState.getState(player)
+	if not state then
+		if model then
+			model:Destroy()
+		end
+		return
+	end
+	if not model or model.Parent == nil then
+		model = RigBuilder.buildBrainrotRig(def, mutation)
+		local income = BootyCatalog.calculateBrainrotIncome(def, mutation, PirateState.getRebirthMultiplier(player))
+		RigBuilder.attachOverheadBillboard(model, def, mutation, "+" .. BootyCatalog.formatMoney(income) .. "/s")
+		model.Parent = workspace
+	end
+	PirateState.setPedestalModel(player, slot, model)
+	PlunderService.attachStealClicker(model, player, slot)
+	model:PivotTo(CFrame.new(LagoonLayout.getPedestalPosition(state.base, slot)))
+end
+
 -- A bought brainrot walks home over the buyer's head, then lands on a pedestal.
+-- The carry is visual only: ownership (slot, Captain's Log, buy bounty) is
+-- recorded at purchase in handleBuyBrainrotRequest, so the brainrot always
+-- lands — walked home or timed out — instead of being refunded.
 function TreasureChuteService.carryBrainrotHome(player, def, mutation, slot)
 	local character = player.Character
 	local state = PirateState.getState(player)
-	if not state or not character then return end
+	if not state or not character then
+		landOnPedestal(player, nil, def, mutation, slot)
+		return
+	end
 	local model = RigBuilder.buildBrainrotRig(def, mutation)
 	local income = BootyCatalog.calculateBrainrotIncome(def, mutation, PirateState.getRebirthMultiplier(player))
 	RigBuilder.attachOverheadBillboard(model, def, mutation, "+" .. BootyCatalog.formatMoney(income) .. "/s")
@@ -111,8 +154,8 @@ function TreasureChuteService.carryBrainrotHome(player, def, mutation, slot)
 	local waited = 0
 	local reached = false
 	while waited < 25 do
-		if not state.carrying or state.carrying.model ~= model then
-			return
+		if not state.carrying or state.carrying.model ~= model or model.Parent == nil then
+			break
 		end
 		local liveCharacter = player.Character
 		humanoidRoot = liveCharacter and liveCharacter:FindFirstChild("HumanoidRootPart")
@@ -127,25 +170,14 @@ function TreasureChuteService.carryBrainrotHome(player, def, mutation, slot)
 		task.wait(0.1)
 		waited += 0.1
 	end
-	if not state.carrying or state.carrying.model ~= model then
-		return
-	end
-	if not reached then
-		state.carrying = nil
-		PirateState.addCash(player, BootyCatalog.getBrainrotCost(def, mutation))
-		model:Destroy()
-		PirateState.broadcast(player, { type = "carrying", name = nil })
-		PirateState.broadcast(player, { type = "feed", text = "Timed out carrying " .. def.name .. " — refunded!", color = "red" })
-		return
-	end
 	state.carrying = nil
-	PirateState.assignBrainrotToSlot(player, slot, def.id, mutation)
-	PirateState.setPedestalModel(player, slot, model)
-	PlunderService.attachStealClicker(model, player, slot)
-	model:PivotTo(CFrame.new(target))
 	PirateState.broadcast(player, { type = "carrying", name = nil })
-	BountyService.addBountyProgress(player, "buy", 1)
-	BountyService.checkBountyCompletion(player)
+	landOnPedestal(player, model, def, mutation, slot)
+	if reached then
+		PirateState.broadcast(player, { type = "feed", text = def.name .. " is on your deck!", color = "green" })
+	else
+		PirateState.broadcast(player, { type = "feed", text = def.name .. " took the scenic route — it is on your deck!", color = "green" })
+	end
 end
 
 function TreasureChuteService.startChuteLoop()
