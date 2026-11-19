@@ -32,9 +32,14 @@ function PirateState.destroyPedestalModel(player, slot)
 	end
 end
 
-local updateEvent = Instance.new("RemoteEvent")
-updateEvent.Name = "LagoonUpdate"
-updateEvent.Parent = ReplicatedStorage
+-- init.server already creates LagoonUpdate before the requires; reuse it here
+-- instead of creating a duplicate.
+local updateEvent = ReplicatedStorage:FindFirstChild("LagoonUpdate")
+if not updateEvent then
+	updateEvent = Instance.new("RemoteEvent")
+	updateEvent.Name = "LagoonUpdate"
+	updateEvent.Parent = ReplicatedStorage
+end
 
 function PirateState.broadcast(player, payload)
 	updateEvent:FireClient(player, payload)

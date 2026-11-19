@@ -12,8 +12,27 @@ local PirateState = require(script.Parent.PirateState)
 local TreasureChuteService = require(script.Parent.TreasureChuteService)
 local PlunderService = require(script.Parent.PlunderService)
 local StormService = require(script.Parent.StormService)
+local BountyService = require(script.Parent.BountyService)
+local LegendService = require(script.Parent.LegendService)
 
 local Stagehand = {}
+
+-- Top-tier showcase deck: 6 pedestals whose combined income at rebirth x4
+-- is about $1.31M/s ($2.63M/s during Golden Tide x2).
+local TOP_DECK = {
+	{ slot = 1, defId = 23, mutation = "GOLDEN" },
+	{ slot = 2, defId = 25, mutation = "GOLDEN" },
+	{ slot = 3, defId = 30, mutation = "NONE" },
+	{ slot = 4, defId = 28, mutation = "CURSED" },
+	{ slot = 5, defId = 26, mutation = "PEARL" },
+	{ slot = 6, defId = 22, mutation = "NONE" },
+}
+
+function Stagehand.fillTopDeck(player)
+	for _, entry in ipairs(TOP_DECK) do
+		Stagehand.fillShowcasePedestal(player, entry.slot, entry.defId, entry.mutation)
+	end
+end
 
 function Stagehand.getFirstPlayer()
 	local players = Players:GetPlayers()
@@ -46,12 +65,14 @@ function Stagehand.stageScreenshot(shot)
 		warn("Stagehand: player has no state yet for " .. tostring(shot))
 		return false
 	end
-	state.cash = 14500
+	-- Staged wealth: $2.5M cash, rebirth 2 (income x4) with the gold aura,
+	-- so the HUD shows big numbers instead of a fresh $100 start.
+	state.cash = 2500000
+	state.rebirths = 2
+	LegendService.applyRebirthAura(player)
 	PirateState.broadcast(player, { type = "cash", cash = state.cash, income = PirateState.getIncomePerSecond(player) })
 	if shot == "hero" then
-		Stagehand.fillShowcasePedestal(player, 1, 23, "GOLDEN")
-		Stagehand.fillShowcasePedestal(player, 2, 34, "GHOST")
-		Stagehand.fillShowcasePedestal(player, 3, 25, "GOLDEN")
+		Stagehand.fillTopDeck(player)
 		TreasureChuteService.spawnConveyorBrainrot()
 		TreasureChuteService.spawnConveyorBrainrot()
 		StormService.goldenTideUntil = os.clock() + 60
@@ -64,15 +85,10 @@ function Stagehand.stageScreenshot(shot)
 		Stagehand.fillShowcasePedestal(player, 1, 30, "NONE")
 		Stagehand.fillShowcasePedestal(player, 2, 11, "PEARL")
 	elseif shot == "index" then
-		for i = 1, 32 do
+		for i = 1, 34 do
 			PirateState.markFound(player, i)
 		end
-		Stagehand.fillShowcasePedestal(player, 1, 23, "GOLDEN")
-		Stagehand.fillShowcasePedestal(player, 2, 34, "GHOST")
-		Stagehand.fillShowcasePedestal(player, 3, 25, "GOLDEN")
-		Stagehand.fillShowcasePedestal(player, 4, 40, "CURSED")
-		Stagehand.fillShowcasePedestal(player, 5, 37, "PEARL")
-		Stagehand.fillShowcasePedestal(player, 6, 30, "NONE")
+		Stagehand.fillTopDeck(player)
 	elseif shot == "kraken" then
 		local character = player.Character
 		if character then
@@ -103,7 +119,13 @@ function Stagehand.stageScreenshot(shot)
 		StormService.currentEvent = "kraken"
 		PirateState.broadcastAll({ type = "event", name = "KRAKEN SURGE!", text = "GET TO HIGH GROUND! The wave is coming!", countdown = 6 })
 	end
+	-- Push the full staged state to the HUD: pedestals, Log tiles and
+	-- bounties, not just cash, so the shot shows the staged game even if
+	-- the join snapshot was missed.
 	PirateState.broadcast(player, { type = "cash", cash = state.cash, income = PirateState.getIncomePerSecond(player) })
+	PirateState.broadcast(player, { type = "slots", slots = state.slots })
+	PirateState.broadcast(player, { type = "index", found = state.found, foundCount = PirateState.getFoundCount(player) })
+	PirateState.broadcast(player, { type = "bounties", list = BountyService.getBountyList(player) })
 	return true
 end
 

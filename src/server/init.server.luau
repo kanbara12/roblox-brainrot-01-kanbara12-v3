@@ -8,6 +8,12 @@ local LagoonAction = Instance.new("RemoteEvent")
 LagoonAction.Name = "LagoonAction"
 LagoonAction.Parent = ReplicatedStorage
 
+-- Created here, before any require, so the client never waits on a remote
+-- that only appears after the require chain (see PirateState).
+local LagoonUpdate = Instance.new("RemoteEvent")
+LagoonUpdate.Name = "LagoonUpdate"
+LagoonUpdate.Parent = ReplicatedStorage
+
 local BootyCatalog = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("BootyCatalog"))
 local RigBuilder = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("RigBuilder"))
 local LagoonLayout = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("LagoonLayout"))
@@ -80,7 +86,9 @@ for _, player in ipairs(Players:GetPlayers()) do
 end
 
 LagoonAction.OnServerEvent:Connect(function(player, action, arg1, arg2)
-	if action == "lock" then
+	if action == "snapshot" then
+		sendSnapshot(player)
+	elseif action == "lock" then
 		PlunderService.activateBaseLock(player)
 	elseif action == "slap" then
 		local nearest = nil

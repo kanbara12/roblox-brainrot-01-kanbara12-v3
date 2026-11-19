@@ -9,8 +9,11 @@ local UserInputService = game:GetService("UserInputService")
 local BootyCatalog = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("BootyCatalog"))
 
 local player = Players.LocalPlayer
-local LagoonUpdate = ReplicatedStorage:WaitForChild("LagoonUpdate")
-local LagoonAction = ReplicatedStorage:WaitForChild("LagoonAction")
+-- Remotes are resolved inside init(), after the GUI is built, with a timeout
+-- + retries — a top-level WaitForChild here used to hang the whole client
+-- script forever (no HUD, no error) if a remote was not there yet.
+local LagoonUpdate
+local LagoonAction
 
 local DeckHud = {}
 
@@ -145,7 +148,7 @@ function DeckHud.init()
 	bountyPanel.Name = "Bounties"
 	bountyPanel.AnchorPoint = Vector2.new(1, 0)
 	bountyPanel.Position = UDim2.new(1, -12, 0, 124)
-	bountyPanel.Size = UDim2.new(0, 300, 0, 150)
+	bountyPanel.Size = UDim2.new(0, 300, 0, 176)
 	bountyPanel.BackgroundColor3 = DARK
 	bountyPanel.BackgroundTransparency = 0.25
 	bountyPanel.BorderColor3 = GOLD
@@ -159,6 +162,10 @@ function DeckHud.init()
 		line.Size = UDim2.new(0, 280, 0, 20)
 		refs.bountyLines[i] = line
 	end
+	-- Next progression goal: the next Captain's Log milestone (10 / 20 / 30 / 40).
+	refs.nextGoal = makeLabel(bountyPanel, "NextGoal", "NEXT GOAL: Log 0/10", 14, UDim2.new(0, 10, 0, 142))
+	refs.nextGoal.Size = UDim2.new(0, 280, 0, 20)
+	refs.nextGoal.TextColor3 = GOLD
 
 	-- Carrying bar, bottom-center.
 	local carryBar = Instance.new("Frame")
@@ -307,7 +314,33 @@ function DeckHud.init()
 		end
 	end, false, Enum.KeyCode.R)
 
-	LagoonUpdate.OnClientEvent:Connect(DeckHud.onUpdate)
+	-- Resolve the remotes now that the GUI exists. Bounded waits: if a remote
+	-- is missing, warn and keep the HUD visible instead of hanging.
+	local function waitRemote(name)
+		for attempt = 1, 3 do
+			local remote = ReplicatedStorage:WaitForChild(name, 10)
+			if remote then
+				return remote
+			end
+			warn("[Rotbeard's Lagoon] DeckHud: " .. name .. " not found (attempt " .. tostring(attempt) .. "/3)")
+		end
+		warn("[Rotbeard's Lagoon] DeckHud: " .. name .. " missing after 3 attempts; live updates disabled")
+		return nil
+	end
+	LagoonUpdate = waitRemote("LagoonUpdate")
+	LagoonAction = waitRemote("LagoonAction")
+	if LagoonUpdate then
+		LagoonUpdate.OnClientEvent:Connect(DeckHud.onUpdate)
+	end
+	-- The server also sends a snapshot 1s after join, but this client may
+	-- not have connected its handler yet at that moment (RemoteEvents do not
+	-- queue for late listeners), so ask for one now that we are listening.
+	-- Without this the HUD can sit at its hardcoded $100 / empty bounties
+	-- forever on a fresh account, because the income loop only broadcasts
+	-- when income is above zero.
+	if LagoonAction then
+		LagoonAction:FireServer("snapshot")
+	end
 	task.spawn(function()
 		while true do
 			task.wait(1)
@@ -377,6 +410,17 @@ function DeckHud.refreshBounties()
 		else
 			refs.bountyLines[i].Text = ""
 		end
+	end
+	-- Next goal: the next Captain's Log milestone after the found count.
+	local foundCount = 0
+	for _ in pairs(state.found) do
+		foundCount += 1
+	end
+	if foundCount >= 40 then
+		refs.nextGoal.Text = "NEXT GOAL: Log COMPLETE!"
+	else
+		local nextMilestone = (math.floor(foundCount / 10) + 1) * 10
+		refs.nextGoal.Text = "NEXT GOAL: Log " .. tostring(foundCount) .. "/" .. tostring(nextMilestone)
 	end
 end
 

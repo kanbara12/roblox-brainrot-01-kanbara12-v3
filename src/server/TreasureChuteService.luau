@@ -149,6 +149,19 @@ function TreasureChuteService.carryBrainrotHome(player, def, mutation, slot)
 end
 
 function TreasureChuteService.startChuteLoop()
+	-- Pre-populate the chute at boot, spread along its length, so it is
+	-- never empty in the first seconds of a fresh server (a photo taken
+	-- right after joining used to show a bare chute even though spawns
+	-- were working).
+	do
+		local total = (LagoonLayout.CHUTE_END - LagoonLayout.CHUTE_START).Magnitude
+		for _, progress in ipairs({ 0, 45, 90 }) do
+			local rider = TreasureChuteService.spawnConveyorBrainrot()
+			rider.progress = progress
+			local t = progress / total
+			rider.model:PivotTo(CFrame.new(LagoonLayout.CHUTE_START:Lerp(LagoonLayout.CHUTE_END, t)))
+		end
+	end
 	task.spawn(function()
 		while true do
 			task.wait(TreasureChuteService.spawnInterval)

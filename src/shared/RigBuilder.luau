@@ -225,31 +225,35 @@ function RigBuilder.paintLagoonSign()
 	if not board then
 		return
 	end
-	local gui = Instance.new("SurfaceGui")
-	gui.Name = "LagoonSign"
-	gui.Face = Enum.NormalId.Front
-	gui.Parent = board
-	local title = Instance.new("TextLabel")
-	title.Name = "SignTitle"
-	title.Size = UDim2.fromScale(1, 0.65)
-	title.Position = UDim2.fromScale(0, 0.05)
-	title.BackgroundTransparency = 1
-	title.Font = Enum.Font.GothamBlack
-	title.TextScaled = true
-	title.TextColor3 = Color3.fromRGB(255, 215, 0)
-	title.TextStrokeTransparency = 0
-	title.Text = "ROTBEARD'S LAGOON"
-	title.Parent = gui
-	local sub = Instance.new("TextLabel")
-	sub.Name = "SignSub"
-	sub.Size = UDim2.fromScale(1, 0.25)
-	sub.Position = UDim2.fromScale(0, 0.7)
-	sub.BackgroundTransparency = 1
-	sub.Font = Enum.Font.GothamBold
-	sub.TextScaled = true
-	sub.TextColor3 = Color3.fromRGB(255, 255, 255)
-	sub.Text = "40 BRAINROTS  •  STEAL  •  LOCK  •  REBIRTH"
-	sub.Parent = gui
+	-- Painted on BOTH faces: the old version only painted Front, so the
+	-- sign was a dark blank board seen from behind (the spawn side).
+	for _, face in ipairs({ Enum.NormalId.Front, Enum.NormalId.Back }) do
+		local gui = Instance.new("SurfaceGui")
+		gui.Name = "LagoonSign"
+		gui.Face = face
+		gui.Parent = board
+		local title = Instance.new("TextLabel")
+		title.Name = "SignTitle"
+		title.Size = UDim2.fromScale(1, 0.65)
+		title.Position = UDim2.fromScale(0, 0.05)
+		title.BackgroundTransparency = 1
+		title.Font = Enum.Font.GothamBlack
+		title.TextScaled = true
+		title.TextColor3 = Color3.fromRGB(255, 215, 0)
+		title.TextStrokeTransparency = 0
+		title.Text = "ROTBEARD'S LAGOON"
+		title.Parent = gui
+		local sub = Instance.new("TextLabel")
+		sub.Name = "SignSub"
+		sub.Size = UDim2.fromScale(1, 0.25)
+		sub.Position = UDim2.fromScale(0, 0.7)
+		sub.BackgroundTransparency = 1
+		sub.Font = Enum.Font.GothamBold
+		sub.TextScaled = true
+		sub.TextColor3 = Color3.fromRGB(255, 255, 255)
+		sub.Text = "40 BRAINROTS  •  STEAL  •  LOCK  •  REBIRTH"
+		sub.Parent = gui
+	end
 end
 
 function RigBuilder.paintPedestalNumbers(prefix)
