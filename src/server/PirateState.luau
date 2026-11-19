@@ -214,6 +214,12 @@ function PirateState.incrementRebirth(player)
 		rebirths = state.rebirths,
 		multiplier = PirateState.getRebirthMultiplier(player),
 		cash = state.cash,
+		-- The deck was just cleared above: carry the (now empty) slots and
+		-- the reset income in this payload, or the client keeps the old
+		-- slots and the Log tiles keep showing "ON DECK" for brainrots
+		-- that are no longer on the deck (live bug, v10 photo 02:34 WIB).
+		slots = state.slots,
+		income = PirateState.getIncomePerSecond(player),
 	})
 end
 

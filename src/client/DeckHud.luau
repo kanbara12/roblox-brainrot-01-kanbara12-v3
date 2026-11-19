@@ -569,6 +569,12 @@ function DeckHud.onUpdate(msg)
 		state.rebirths = msg.rebirths or state.rebirths
 		state.multiplier = msg.multiplier or state.multiplier
 		state.cash = msg.cash or state.cash
+		-- Rebirth clears the deck server-side: apply the emptied slots
+		-- (and the reset income) here and redraw the Log, or the tiles
+		-- keep the stale "ON DECK" marker for brainrots that are gone.
+		state.slots = msg.slots or {}
+		state.income = msg.income or state.income
+		DeckHud.refreshLog()
 		DeckHud.addFeed("REBIRTHED! Income x" .. tostring(state.multiplier) .. " forever!", "gold")
 	elseif msg.type == "event" then
 		if msg.name and msg.name ~= "" then
