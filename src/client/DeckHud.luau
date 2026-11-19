@@ -371,7 +371,7 @@ end
 function DeckHud.refreshRebirthPanel()
 	local cost = 50000 * (4 ^ state.rebirths)
 	local required = state.rebirths == 0 and "LEGENDARY" or "MYTHIC"
-	refs.rebirthInfo.Text = "Cost: $" .. BootyCatalog.formatMoney(cost)
+	refs.rebirthInfo.Text = "Cost: " .. BootyCatalog.formatMoney(cost)
 		.. "\nNeed: any " .. required .. " brainrot on deck"
 		.. "\nNow: x" .. tostring(state.multiplier) .. " income"
 		.. "\nAfter: x" .. tostring(state.multiplier * 2) .. " income, deck resets"
@@ -384,7 +384,7 @@ function DeckHud.refreshUpgrades()
 		if level >= row.max then
 			row.buy.Text = "MAXED"
 		else
-			row.buy.Text = "BUY $" .. BootyCatalog.formatMoney(row.base * (2 ^ level))
+			row.buy.Text = "BUY " .. BootyCatalog.formatMoney(row.base * (2 ^ level))
 		end
 	end
 end
@@ -405,7 +405,7 @@ function DeckHud.refreshBounties()
 		local bounty = ordered[i]
 		if bounty then
 			local mark = bounty.done and "DONE " or ""
-			refs.bountyLines[i].Text = mark .. bounty.text .. " " .. tostring(bounty.progress) .. "/" .. tostring(bounty.target) .. "  +$" .. BootyCatalog.formatMoney(bounty.reward)
+			refs.bountyLines[i].Text = mark .. bounty.text .. " " .. tostring(bounty.progress) .. "/" .. tostring(bounty.target) .. "  +" .. BootyCatalog.formatMoney(bounty.reward)
 			refs.bountyLines[i].TextColor3 = bounty.done and GREEN or CREAM
 		else
 			refs.bountyLines[i].Text = ""
@@ -499,6 +499,22 @@ function DeckHud.addFeed(text, color)
 	end)
 end
 
+-- RemoteEvents serialize a sparse numeric-keyed table as a dictionary with
+-- STRING keys, so the server's found-set {[5]=true, [23]=true} arrives as
+-- {["5"]=true, ["23"]=true}. The tile lookup uses numeric ids, so without
+-- this every tile reads nil and shows "???" even though the count (pairs)
+-- is right. Normalize keys back to numbers on receipt.
+local function normalizeFound(found)
+	local clean = {}
+	for key, value in pairs(found or {}) do
+		local id = tonumber(key)
+		if id then
+			clean[id] = value
+		end
+	end
+	return clean
+end
+
 function DeckHud.onUpdate(msg)
 	if msg.type == "snapshot" then
 		state.cash = msg.cash or 0
@@ -508,7 +524,7 @@ function DeckHud.onUpdate(msg)
 		state.slots = msg.slots or {}
 		state.upgrades = msg.upgrades or {}
 		state.bounties = msg.bounties or {}
-		state.found = msg.found or {}
+		state.found = normalizeFound(msg.found)
 		state.lockRemaining = msg.remaining or 0
 		DeckHud.refreshUpgrades()
 		DeckHud.refreshBounties()
@@ -518,7 +534,7 @@ function DeckHud.onUpdate(msg)
 		state.cash = msg.cash or state.cash
 		state.income = msg.income or state.income
 		if state.income > 0 and state.cash > old then
-			refs.tickPopup.Text = "+$" .. BootyCatalog.formatMoney(state.cash - old)
+			refs.tickPopup.Text = "+" .. BootyCatalog.formatMoney(state.cash - old)
 			refs.tickPopup.Visible = true
 			task.delay(1.2, function()
 				refs.tickPopup.Visible = false
@@ -566,15 +582,15 @@ function DeckHud.onUpdate(msg)
 			state.eventCountdown = 0
 		end
 	elseif msg.type == "index" then
-		state.found = msg.found or {}
+		state.found = normalizeFound(msg.found)
 		DeckHud.refreshLog()
 		-- The Log milestone line ("NEXT GOAL: Log x/10") is computed in
 		-- refreshBounties from state.found, so refresh it here too — without
 		-- this it only moved on the next snapshot or bounty completion.
 		DeckHud.refreshBounties()
 	end
-	refs.cashLabel.Text = "$" .. BootyCatalog.formatMoney(state.cash)
-	refs.incomeLabel.Text = "+$" .. BootyCatalog.formatMoney(state.income) .. "/s  x" .. tostring(state.multiplier)
+	refs.cashLabel.Text = BootyCatalog.formatMoney(state.cash)
+	refs.incomeLabel.Text = "+" .. BootyCatalog.formatMoney(state.income) .. "/s  x" .. tostring(state.multiplier)
 end
 
 return DeckHud
