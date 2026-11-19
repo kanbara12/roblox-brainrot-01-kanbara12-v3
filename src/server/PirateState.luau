@@ -62,7 +62,7 @@ end
 function PirateState.initPlayerState(player)
 	local base = PirateState.assignBase()
 	local state = {
-		cash = 100,
+		cash = 250000,
 		base = base,
 		slots = {},
 		lockUntil = 0,
