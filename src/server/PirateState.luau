@@ -10,7 +10,6 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 
 local BootyCatalog = require(Shared:WaitForChild("BootyCatalog"))
-local StormService = require(script.Parent.StormService)
 
 local PirateState = {}
 
@@ -212,6 +211,10 @@ function PirateState.getIncomePerSecond(player)
 	end
 	local compassLevel = PirateState.getUpgradeLevel(player, "income")
 	local compassFactor = 1 + 0.10 * compassLevel
+	-- Lazy require: StormService requires PirateState at top level, so a
+	-- top-level require here would be a circular require that errors on
+	-- live Roblox ("requested module was required recursively").
+	local StormService = require(script.Parent.StormService)
 	local tideMultiplier = StormService.getGoldenTideMultiplier()
 	return math.floor(total * compassFactor * tideMultiplier)
 end
