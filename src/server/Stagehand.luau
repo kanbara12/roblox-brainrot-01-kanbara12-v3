@@ -1,18 +1,32 @@
+-- Stagehand — TOUR screenshot staging.
+-- Stages each TOUR screenshot for the first player in the server. The kit's
+-- TOUR steps call it with a shot name ("hero", "chute", "index", or
+-- "kraken"). It seeds cash, fills showcase pedestals, spawns chute riders,
+-- marks Log tiles, and sets the event state for the shot.
+
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
+local Shared = ReplicatedStorage:WaitForChild("Shared")
+local BootyCatalog = require(Shared:WaitForChild("BootyCatalog"))
+local RigBuilder = require(Shared:WaitForChild("RigBuilder"))
+local LagoonLayout = require(Shared:WaitForChild("LagoonLayout"))
+
+local PirateState = require(script.Parent:WaitForChild("PirateState"))
+local TreasureChuteService = require(script.Parent:WaitForChild("TreasureChuteService"))
+local PlunderService = require(script.Parent:WaitForChild("PlunderService"))
+local StormService = require(script.Parent:WaitForChild("StormService"))
+local BountyService = require(script.Parent:WaitForChild("BountyService"))
+local LegendService = require(script.Parent:WaitForChild("LegendService"))
+
 local Stagehand = {}
 
-local BootyCatalog = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("BootyCatalog"))
-local RigBuilder = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("RigBuilder"))
-local LagoonLayout = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("LagoonLayout"))
-local PirateState = require(script.Parent.PirateState)
-local TreasureChuteService = require(script.Parent.TreasureChuteService)
-local PlunderService = require(script.Parent.PlunderService)
-local StormService = require(script.Parent.StormService)
-local BountyService = require(script.Parent.BountyService)
-local LegendService = require(script.Parent.LegendService)
+local STAGED_CASH = 2500000
+local STAGED_REBIRTHS = 2
+local CARRY_HEIGHT = 4
 
+-- Six fixed showcase entries. Their combined income at rebirth x4 is about
+-- $1.31M/s ($2.63M/s during a Golden Tide x2).
 local TOP_DECK = {
 	{ slot = 1, defId = 23, mutation = "GOLDEN" },
 	{ slot = 2, defId = 25, mutation = "GOLDEN" },
@@ -23,11 +37,8 @@ local TOP_DECK = {
 }
 
 function Stagehand.getFirstPlayer()
-	local all = Players:GetPlayers()
-	if #all == 0 then
-		return nil
-	end
-	return all[1]
+	local players = Players:GetPlayers()
+	return players[1]
 end
 
 function Stagehand.fillShowcasePedestal(player, slot, defId, mutation)
@@ -35,22 +46,27 @@ function Stagehand.fillShowcasePedestal(player, slot, defId, mutation)
 	if not state then
 		return
 	end
+	PirateState.clearBaseSlot(player, slot)
+	if not PirateState.assignBrainrotToSlot(player, slot, defId, mutation) then
+		return
+	end
 	local def = BootyCatalog.getBrainrotDefinition(defId)
 	if not def then
 		return
 	end
-	PirateState.clearBaseSlot(player, slot)
-	local placed = PirateState.assignBrainrotToSlot(player, slot, defId, mutation)
-	if not placed then
-		return
-	end
-	local income = BootyCatalog.calculateBrainrotIncome(def, mutation, PirateState.getRebirthMultiplier(player))
+	local income =
+		BootyCatalog.calculateBrainrotIncome(def, mutation, PirateState.getRebirthMultiplier(player))
 	local model = RigBuilder.buildBrainrotRig(def, mutation)
-	RigBuilder.attachOverheadBillboard(model, def, mutation, "+" .. BootyCatalog.formatMoney(income) .. "/s")
+	RigBuilder.attachOverheadBillboard(
+		model,
+		def,
+		mutation,
+		"+" .. BootyCatalog.formatMoney(income) .. "/s"
+	)
 	model.Parent = workspace
+	model:PivotTo(CFrame.new(LagoonLayout.getPedestalPosition(state.base, slot)))
 	PirateState.setPedestalModel(player, slot, model)
 	PlunderService.attachStealClicker(model, player, slot)
-	model:PivotTo(CFrame.new(LagoonLayout.getPedestalPosition(state.base, slot)))
 end
 
 function Stagehand.fillTopDeck(player)
@@ -62,16 +78,17 @@ end
 function Stagehand.stageScreenshot(shot)
 	local player = Stagehand.getFirstPlayer()
 	if not player then
-		warn("[Stagehand] No player in server to stage screenshot: " .. tostring(shot))
+		warn("[Stagehand] No player in server to stage " .. shot)
 		return false
 	end
 	local state = PirateState.getState(player)
 	if not state then
-		warn("[Stagehand] Player has no state: " .. player.Name)
+		warn("[Stagehand] No state for first player to stage " .. shot)
 		return false
 	end
-	state.cash = 2500000
-	state.rebirths = 2
+	-- Shared wealth staging for every shot.
+	state.cash = STAGED_CASH
+	state.rebirths = STAGED_REBIRTHS
 	LegendService.applyRebirthAura(player)
 	PirateState.broadcast(player, {
 		type = "cash",
@@ -100,36 +117,32 @@ function Stagehand.stageScreenshot(shot)
 			character:PivotTo(CFrame.new(LagoonLayout.LIGHTHOUSE_TOP))
 		end
 		local def = BootyCatalog.getBrainrotDefinition(34)
-		if def then
-			local model = RigBuilder.buildBrainrotRig(def, "GHOST")
-			RigBuilder.attachOverheadBillboard(model, def, "GHOST", "STOLEN! RUN HOME!")
-			model.Parent = workspace
-			if character then
-				local hrp = character:FindFirstChild("HumanoidRootPart")
-				if hrp then
-					model:PivotTo(CFrame.new(hrp.Position + Vector3.new(0, 4, 0)))
-				end
-			end
-			local income = BootyCatalog.calculateBrainrotIncome(def, "GHOST", PirateState.getRebirthMultiplier(player))
-			state.carrying = { defId = 34, mutation = "GHOST", model = model }
-			PirateState.broadcast(player, {
-				type = "carrying",
-				name = def.name,
-				income = income,
-				stolen = true,
-			})
-		end
+		local model = RigBuilder.buildBrainrotRig(def, "GHOST")
+		RigBuilder.attachOverheadBillboard(model, def, "GHOST", "STOLEN! RUN HOME!")
+		model.Parent = workspace
+		local root = character and character:FindFirstChild("HumanoidRootPart")
+		local headPos = root and root.Position or LagoonLayout.LIGHTHOUSE_TOP
+		model:PivotTo(CFrame.new(headPos + Vector3.new(0, CARRY_HEIGHT, 0)))
+		local income =
+			BootyCatalog.calculateBrainrotIncome(def, "GHOST", PirateState.getRebirthMultiplier(player))
+		state.carrying = { defId = 34, mutation = "GHOST", model = model }
+		PirateState.broadcast(player, {
+			type = "carrying",
+			name = def.name,
+			income = income,
+			stolen = true,
+		})
 		local wave = workspace:FindFirstChild("SurgeWave")
 		if wave then
 			wave.Transparency = 0.25
 			wave.CFrame = CFrame.new(0, 6, -40)
 		end
-		for i = 1, 5 do
-			local tentacle = workspace:FindFirstChild("Tentacle" .. i)
+		for index = 1, 5 do
+			local tentacle = workspace:FindFirstChild("Tentacle" .. index)
 			if tentacle then
 				tentacle.Transparency = 0
-				local pos = tentacle.Position
-				tentacle.CFrame = CFrame.new(pos.X, 4, -100)
+				local cf = tentacle.CFrame
+				tentacle.CFrame = CFrame.new(cf.X, 4, -100)
 			end
 		end
 		StormService.setStagedEventBanner(
@@ -139,6 +152,8 @@ function Stagehand.stageScreenshot(shot)
 			6
 		)
 	end
+	-- Push the full staged state to the HUD, so the shot shows the staged
+	-- game even if the join snapshot was missed.
 	PirateState.broadcast(player, {
 		type = "cash",
 		cash = state.cash,

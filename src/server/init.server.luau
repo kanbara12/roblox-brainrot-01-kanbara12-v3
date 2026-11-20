@@ -1,14 +1,29 @@
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
+-- init.server — server boot.
+-- Boots Rotbeard's Lagoon: creates the remotes, paints the world sign and
+-- pedestal numbers, fills the rival deck, starts every loop, and wires
+-- player join/leave plus client actions.
+
 local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
-local actionRemote = Instance.new("RemoteEvent")
-actionRemote.Name = "LagoonAction"
-actionRemote.Parent = ReplicatedStorage
+-- 1. Create the remotes first, before any require, so the client never waits
+-- on a remote that only appears after the require chain.
+local LagoonAction = ReplicatedStorage:FindFirstChild("LagoonAction")
+if not LagoonAction then
+	LagoonAction = Instance.new("RemoteEvent")
+	LagoonAction.Name = "LagoonAction"
+	LagoonAction.Parent = ReplicatedStorage
+end
+local LagoonUpdate = ReplicatedStorage:FindFirstChild("LagoonUpdate")
+if not LagoonUpdate then
+	LagoonUpdate = Instance.new("RemoteEvent")
+	LagoonUpdate.Name = "LagoonUpdate"
+	LagoonUpdate.Parent = ReplicatedStorage
+end
 
-local updateRemote = Instance.new("RemoteEvent")
-updateRemote.Name = "LagoonUpdate"
-updateRemote.Parent = ReplicatedStorage
-
+-- 2. Require the modules. Rojo builds this file into a Script named "Server"
+-- whose children are the server modules, so the requires MUST be of the form
+-- require(script.<ModuleName>) — never require(script.Parent.<ModuleName>).
 local PirateState = require(script.PirateState)
 local TreasureChuteService = require(script.TreasureChuteService)
 local DoubloonService = require(script.DoubloonService)
@@ -24,6 +39,30 @@ local Shared = ReplicatedStorage:WaitForChild("Shared")
 local BootyCatalog = require(Shared:WaitForChild("BootyCatalog"))
 local RigBuilder = require(Shared:WaitForChild("RigBuilder"))
 local LagoonLayout = require(Shared:WaitForChild("LagoonLayout"))
+
+-- 3. Paint the world.
+RigBuilder.paintLagoonSign()
+RigBuilder.paintPedestalNumbers("A")
+RigBuilder.paintPedestalNumbers("B")
+RigBuilder.paintPedestalNumbers("R")
+
+-- 4. Start the world systems.
+RivalCrewService.populateSoloRivalPlot()
+TreasureChuteService.startChuteLoop()
+DoubloonService.startIncomeLoop()
+StormService.startEventScheduler()
+
+-- 5. Expire base locks every 5 seconds.
+task.spawn(function()
+	while true do
+		task.wait(5)
+		PlunderService.expireBaseLocks()
+	end
+end)
+
+--------------------------------------------------------------------------------
+-- Players
+--------------------------------------------------------------------------------
 
 local function sendSnapshot(player)
 	local state = PirateState.getState(player)
@@ -57,76 +96,63 @@ end
 local function onPlayerAdded(player)
 	PirateState.initPlayerState(player)
 	player.CharacterAdded:Connect(function()
-		setupCharacter(player)
+		task.spawn(setupCharacter, player)
 	end)
 	if player.Character then
-		task.spawn(function()
-			setupCharacter(player)
-		end)
+		task.spawn(setupCharacter, player)
 	end
 	task.delay(1, function()
 		sendSnapshot(player)
 	end)
 end
 
+for _, player in ipairs(Players:GetPlayers()) do
+	onPlayerAdded(player)
+end
 Players.PlayerAdded:Connect(onPlayerAdded)
 Players.PlayerRemoving:Connect(function(player)
 	PirateState.removePlayerState(player)
 end)
-for _, player in ipairs(Players:GetPlayers()) do
-	onPlayerAdded(player)
+
+--------------------------------------------------------------------------------
+-- Client actions
+--------------------------------------------------------------------------------
+
+local SLAP_RANGE = 14
+
+local function findNearestPlayerInRange(player, range)
+	local character = player.Character
+	local root = character and character:FindFirstChild("HumanoidRootPart")
+	if not root then
+		return nil
+	end
+	local nearest = nil
+	local nearestDist = range
+	for _, other in ipairs(Players:GetPlayers()) do
+		if other ~= player then
+			local otherChar = other.Character
+			local otherRoot = otherChar and otherChar:FindFirstChild("HumanoidRootPart")
+			if otherRoot then
+				local dist = (otherRoot.Position - root.Position).Magnitude
+				if dist <= nearestDist then
+					nearest = other
+					nearestDist = dist
+				end
+			end
+		end
+	end
+	return nearest
 end
 
-RigBuilder.paintLagoonSign()
-RigBuilder.paintPedestalNumbers("A")
-RigBuilder.paintPedestalNumbers("B")
-RigBuilder.paintPedestalNumbers("R")
-
-RivalCrewService.populateSoloRivalPlot()
-TreasureChuteService.startChuteLoop()
-DoubloonService.startIncomeLoop()
-StormService.startEventScheduler()
-
-task.spawn(function()
-	while true do
-		task.wait(5)
-		PlunderService.expireBaseLocks()
-	end
-end)
-
-actionRemote.OnServerEvent:Connect(function(player, action, arg1, arg2)
+LagoonAction.OnServerEvent:Connect(function(player, action, arg1, arg2)
 	if action == "snapshot" then
 		sendSnapshot(player)
 	elseif action == "lock" then
 		PlunderService.activateBaseLock(player)
 	elseif action == "slap" then
-		local character = player.Character
-		if not character then
-			return
-		end
-		local hrp = character:FindFirstChild("HumanoidRootPart")
-		if not hrp then
-			return
-		end
-		local nearest = nil
-		local nearestDist = 14
-		for _, other in ipairs(Players:GetPlayers()) do
-			if other ~= player then
-				local otherChar = other.Character
-				if otherChar then
-					local otherHrp = otherChar:FindFirstChild("HumanoidRootPart")
-					if otherHrp then
-						local dist = (hrp.Position - otherHrp.Position).Magnitude
-						if dist <= nearestDist then
-							nearest = other
-							nearestDist = dist
-						end
-					end
-				end
-			end
-		end
-		if nearest then
-			PlunderService.handleSlapPlayer(player, nearest)
+		local victim = findNearestPlayerInRange(player, SLAP_RANGE)
+		if victim then
+			PlunderService.handleSlapPlayer(player, victim)
 		end
 	elseif action == "rebirth" then
 		if LegendService.canPlayerRebirth(player) then

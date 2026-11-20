@@ -1,66 +1,102 @@
+-- PirateState — the single store for all player state.
+-- Every player's money, base, deck, lock, rebirths, collection, upgrades,
+-- bounties, and carried brainrot live here. No other script keeps player
+-- state of its own; every other server module reads and mutates state only
+-- through this module's functions.
+
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local Shared = ReplicatedStorage:WaitForChild("Shared")
+local BootyCatalog = require(Shared:WaitForChild("BootyCatalog"))
+-- Circular with StormService (it requires PirateState). Safe: neither module
+-- calls the other at load time, only at runtime, and both return the same
+-- table object they keep adding functions to.
+local StormService = require(script.Parent:WaitForChild("StormService"))
+
+-- The LagoonUpdate remote is created by init.server before any require.
+-- Reuse it here; only create it if it somehow does not exist yet.
+local LagoonUpdate = ReplicatedStorage:FindFirstChild("LagoonUpdate")
+if not LagoonUpdate then
+	LagoonUpdate = Instance.new("RemoteEvent")
+	LagoonUpdate.Name = "LagoonUpdate"
+	LagoonUpdate.Parent = ReplicatedStorage
+end
 
 local PirateState = {}
 
-local BootyCatalog = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("BootyCatalog"))
-local StormService = require(script.Parent.StormService)
-
-local players = {}
+-- Module-level tables.
+local players = {} -- player -> state record
 local baseOccupants = { A = 0, B = 0 }
-local pedestalModels = {}
+local pedestalModels = {} -- player -> slot -> pedestal Model
 
-local updateRemote = ReplicatedStorage:FindFirstChild("LagoonUpdate")
-if not updateRemote then
-	updateRemote = Instance.new("RemoteEvent")
-	updateRemote.Name = "LagoonUpdate"
-	updateRemote.Parent = ReplicatedStorage
-end
+local STARTING_CASH = 250000
+local REBIRTH_RESET_CASH = 100
+local SLOT_COUNT = 8
+local BASE_SLOT_CAP = 6
+local MAX_EXTRA_SLOTS = 2
+
+--------------------------------------------------------------------------------
+-- Pedestal models
+--------------------------------------------------------------------------------
 
 function PirateState.setPedestalModel(player, slot, model)
-	if not pedestalModels[player] then
-		pedestalModels[player] = {}
+	local bySlot = pedestalModels[player]
+	if not bySlot then
+		bySlot = {}
+		pedestalModels[player] = bySlot
 	end
-	pedestalModels[player][slot] = model
+	bySlot[slot] = model
 end
 
 function PirateState.getPedestalModel(player, slot)
-	local byPlayer = pedestalModels[player]
-	if not byPlayer then
+	local bySlot = pedestalModels[player]
+	if not bySlot then
 		return nil
 	end
-	return byPlayer[slot]
+	return bySlot[slot]
 end
 
 function PirateState.destroyPedestalModel(player, slot)
-	local model = PirateState.getPedestalModel(player, slot)
-	if model then
-		model:Destroy()
+	local bySlot = pedestalModels[player]
+	if not bySlot then
+		return
 	end
-	if pedestalModels[player] then
-		pedestalModels[player][slot] = nil
+	local model = bySlot[slot]
+	if model then
+		bySlot[slot] = nil
+		model:Destroy()
 	end
 end
 
+--------------------------------------------------------------------------------
+-- Broadcasting
+--------------------------------------------------------------------------------
+
 function PirateState.broadcast(player, payload)
-	updateRemote:FireClient(player, payload)
+	LagoonUpdate:FireClient(player, payload)
 end
 
 function PirateState.broadcastAll(payload)
-	updateRemote:FireAllClients(payload)
+	LagoonUpdate:FireAllClients(payload)
 end
 
+--------------------------------------------------------------------------------
+-- Join / leave
+--------------------------------------------------------------------------------
+
+-- Assigns the less-occupied base (ties go to A) and counts the occupant.
 function PirateState.assignBase()
 	local base = "A"
 	if baseOccupants.B < baseOccupants.A then
 		base = "B"
 	end
-	baseOccupants[base] += 1
+	baseOccupants[base] = baseOccupants[base] + 1
 	return base
 end
 
 function PirateState.initPlayerState(player)
 	local state = {
-		cash = 250000,
+		cash = STARTING_CASH,
 		base = PirateState.assignBase(),
 		slots = {},
 		lockUntil = 0,
@@ -72,8 +108,10 @@ function PirateState.initPlayerState(player)
 		bountiesDone = {},
 		carrying = nil,
 	}
+	for slot = 1, SLOT_COUNT do
+		state.slots[slot] = nil
+	end
 	players[player] = state
-	pedestalModels[player] = {}
 	return state
 end
 
@@ -82,23 +120,24 @@ function PirateState.removePlayerState(player)
 	if not state then
 		return
 	end
-	for slot = 1, 8 do
+	for slot = 1, SLOT_COUNT do
 		PirateState.destroyPedestalModel(player, slot)
 	end
 	if state.carrying and state.carrying.model then
 		state.carrying.model:Destroy()
 	end
-	local base = state.base
-	if base and baseOccupants[base] then
-		baseOccupants[base] = math.max(0, baseOccupants[base] - 1)
-	end
 	pedestalModels[player] = nil
+	baseOccupants[state.base] = math.max(0, baseOccupants[state.base] - 1)
 	players[player] = nil
 end
 
 function PirateState.getState(player)
 	return players[player]
 end
+
+--------------------------------------------------------------------------------
+-- Cash
+--------------------------------------------------------------------------------
 
 function PirateState.getCash(player)
 	local state = players[player]
@@ -108,33 +147,12 @@ function PirateState.getCash(player)
 	return state.cash
 end
 
-function PirateState.getIncomePerSecond(player)
-	local state = players[player]
-	if not state then
-		return 0
-	end
-	local rebirthMultiplier = PirateState.getRebirthMultiplier(player)
-	local total = 0
-	for slot = 1, 8 do
-		local entry = state.slots[slot]
-		if entry then
-			local def = BootyCatalog.getBrainrotDefinition(entry.defId)
-			if def then
-				total += BootyCatalog.calculateBrainrotIncome(def, entry.mutation, rebirthMultiplier)
-			end
-		end
-	end
-	local compass = PirateState.getUpgradeLevel(player, "income")
-	local tide = StormService.getGoldenTideMultiplier()
-	return math.floor(total * (1 + 0.10 * compass) * tide)
-end
-
 function PirateState.addCash(player, amount)
 	local state = players[player]
 	if not state then
 		return
 	end
-	state.cash += amount
+	state.cash = state.cash + amount
 	PirateState.broadcast(player, {
 		type = "cash",
 		cash = state.cash,
@@ -142,15 +160,13 @@ function PirateState.addCash(player, amount)
 	})
 end
 
+-- Returns false (and changes nothing) when cash is insufficient.
 function PirateState.spendCash(player, amount)
 	local state = players[player]
-	if not state then
+	if not state or state.cash < amount then
 		return false
 	end
-	if state.cash < amount then
-		return false
-	end
-	state.cash -= amount
+	state.cash = state.cash - amount
 	PirateState.broadcast(player, {
 		type = "cash",
 		cash = state.cash,
@@ -158,6 +174,10 @@ function PirateState.spendCash(player, amount)
 	})
 	return true
 end
+
+--------------------------------------------------------------------------------
+-- Rebirths and income
+--------------------------------------------------------------------------------
 
 function PirateState.getRebirthMultiplier(player)
 	local state = players[player]
@@ -167,14 +187,39 @@ function PirateState.getRebirthMultiplier(player)
 	return 2 ^ state.rebirths
 end
 
+function PirateState.getIncomePerSecond(player)
+	local state = players[player]
+	if not state then
+		return 0
+	end
+	local total = 0
+	local multiplier = PirateState.getRebirthMultiplier(player)
+	for _, entry in ipairs(state.slots) do
+		if entry then
+			local def = BootyCatalog.getBrainrotDefinition(entry.defId)
+			if def then
+				total = total
+					+ BootyCatalog.calculateBrainrotIncome(def, entry.mutation, multiplier)
+			end
+		end
+	end
+	local compass = PirateState.getUpgradeLevel(player, "income")
+	local tide = StormService.getGoldenTideMultiplier()
+	return math.floor(total * (1 + 0.10 * compass) * tide)
+end
+
+--------------------------------------------------------------------------------
+-- Deck slots
+--------------------------------------------------------------------------------
+
 function PirateState.getFreeSlot(player)
 	local state = players[player]
 	if not state then
 		return nil
 	end
-	local cap = 6 + PirateState.getUpgradeLevel(player, "slots")
-	if cap > 8 then
-		cap = 8
+	local cap = BASE_SLOT_CAP + PirateState.getUpgradeLevel(player, "slots")
+	if cap > SLOT_COUNT then
+		cap = SLOT_COUNT
 	end
 	for slot = 1, cap do
 		if not state.slots[slot] then
@@ -184,12 +229,12 @@ function PirateState.getFreeSlot(player)
 	return nil
 end
 
+-- Records the brainrot in the slot, marks it found in the Captain's Log,
+-- and broadcasts the new slot table. Fails when there is no state or the
+-- slot is already occupied.
 function PirateState.assignBrainrotToSlot(player, slot, defId, mutation)
 	local state = players[player]
-	if not state then
-		return false
-	end
-	if state.slots[slot] then
+	if not state or state.slots[slot] then
 		return false
 	end
 	state.slots[slot] = { defId = defId, mutation = mutation }
@@ -198,6 +243,7 @@ function PirateState.assignBrainrotToSlot(player, slot, defId, mutation)
 	return true
 end
 
+-- Clears the slot and destroys its pedestal model. Returns the old entry.
 function PirateState.clearBaseSlot(player, slot)
 	local state = players[player]
 	if not state then
@@ -210,14 +256,20 @@ function PirateState.clearBaseSlot(player, slot)
 	return old
 end
 
+--------------------------------------------------------------------------------
+-- Lock
+--------------------------------------------------------------------------------
+
 function PirateState.setBaseLockUntil(player, untilTime)
 	local state = players[player]
 	if not state then
 		return
 	end
 	state.lockUntil = untilTime
-	local remaining = math.max(0, math.floor(untilTime - os.clock()))
-	PirateState.broadcast(player, { type = "lock", remaining = remaining })
+	PirateState.broadcast(player, {
+		type = "lock",
+		remaining = math.floor(PirateState.getBaseLockRemaining(player)),
+	})
 	PirateState.broadcastAll({
 		type = "feed",
 		text = player.Name .. "'s deck is LOCKED!",
@@ -241,17 +293,23 @@ function PirateState.getBaseLockRemaining(player)
 	return math.max(0, state.lockUntil - os.clock())
 end
 
+--------------------------------------------------------------------------------
+-- Rebirth
+--------------------------------------------------------------------------------
+
 function PirateState.incrementRebirth(player)
 	local state = players[player]
 	if not state then
 		return
 	end
-	state.rebirths += 1
-	state.cash = 100
-	for slot = 1, 8 do
+	state.rebirths = state.rebirths + 1
+	state.cash = REBIRTH_RESET_CASH
+	for slot = 1, SLOT_COUNT do
 		state.slots[slot] = nil
 		PirateState.destroyPedestalModel(player, slot)
 	end
+	-- The empty slots and the reset income MUST be included, or the client
+	-- keeps showing the old deck after the rebirth.
 	PirateState.broadcast(player, {
 		type = "rebirth",
 		rebirths = state.rebirths,
@@ -262,15 +320,18 @@ function PirateState.incrementRebirth(player)
 	})
 end
 
+--------------------------------------------------------------------------------
+-- Captain's Log (collection)
+--------------------------------------------------------------------------------
+
 function PirateState.markFound(player, defId)
 	local state = players[player]
-	if not state then
-		return
-	end
-	if state.found[defId] then
+	if not state or state.found[defId] then
 		return
 	end
 	state.found[defId] = true
+	-- Keep the found set keyed by numeric brainrot id when broadcasting;
+	-- the client normalises the string keys RemoteEvent serialization makes.
 	PirateState.broadcast(player, {
 		type = "index",
 		found = state.found,
@@ -285,10 +346,14 @@ function PirateState.getFoundCount(player)
 	end
 	local count = 0
 	for _ in pairs(state.found) do
-		count += 1
+		count = count + 1
 	end
 	return count
 end
+
+--------------------------------------------------------------------------------
+-- Upgrades
+--------------------------------------------------------------------------------
 
 function PirateState.getUpgradeLevel(player, key)
 	local state = players[player]
