@@ -1,5 +1,3 @@
--- BountyService: twelve bounties with doubloon rewards. Progress is counted
--- by the services that own each action, and completion pays out at once.
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local BootyCatalog = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("BootyCatalog"))
@@ -22,70 +20,86 @@ BountyService.BOUNTIES = {
 	{ id = "upgrade3", kind = "upgrades", target = 3, text = "Buy 3 upgrades", reward = 1500 },
 }
 
-function BountyService.getBountyList(player)
-	local state = PirateState.getState(player)
-	local list = {}
-	for _, bounty in ipairs(BountyService.BOUNTIES) do
-		local progress = 0
-		if state then
-			if bounty.kind == "index" then
-				progress = PirateState.getFoundCount(player)
-			elseif bounty.kind == "ownEpic" or bounty.kind == "ownMythic" then
-				progress = BountyService.countOwnedRarity(player, bounty.kind)
-			else
-				progress = state.bounties[bounty.kind] or 0
-			end
+local function rarityIndex(rarityName)
+	for i, name in ipairs(BootyCatalog.RARITY_ORDER) do
+		if name == rarityName then
+			return i
 		end
-		table.insert(list, {
-			id = bounty.id,
-			text = bounty.text,
-			target = bounty.target,
-			reward = bounty.reward,
-			progress = progress,
-			done = state and state.bountiesDone[bounty.id] == true or false,
-		})
 	end
-	return list
+	return 1
+end
+
+local function computeProgress(player, bounty)
+	local state = PirateState.getState(player)
+	if bounty.kind == "index" then
+		return PirateState.getFoundCount(player)
+	elseif bounty.kind == "ownEpic" or bounty.kind == "ownMythic" then
+		return BountyService.countOwnedRarity(player, bounty.kind)
+	end
+	if not state then
+		return 0
+	end
+	return state.bounties[bounty.kind] or 0
 end
 
 function BountyService.countOwnedRarity(player, kind)
 	local state = PirateState.getState(player)
-	if not state then return 0 end
-	local wantIndex = kind == "ownEpic" and 3 or 5
-	for _, slot in pairs(state.slots) do
-		if slot then
-			local def = BootyCatalog.getBrainrotDefinition(slot.defId)
-			if def then
-				local defIndex = table.find(BootyCatalog.RARITY_ORDER, def.rarity) or 1
-				if defIndex >= wantIndex then
-					return 1
-				end
+	if not state then
+		return 0
+	end
+	local wanted = 3
+	if kind == "ownMythic" then
+		wanted = 5
+	end
+	for slot = 1, 8 do
+		local entry = state.slots[slot]
+		if entry then
+			local def = BootyCatalog.getBrainrotDefinition(entry.defId)
+			if def and rarityIndex(def.rarity) >= wanted then
+				return 1
 			end
 		end
 	end
 	return 0
 end
 
+function BountyService.getBountyList(player)
+	local state = PirateState.getState(player)
+	local list = {}
+	for _, bounty in ipairs(BountyService.BOUNTIES) do
+		local done = false
+		if state and state.bountiesDone[bounty.id] then
+			done = true
+		end
+		table.insert(list, {
+			id = bounty.id,
+			text = bounty.text,
+			target = bounty.target,
+			reward = bounty.reward,
+			progress = computeProgress(player, bounty),
+			done = done,
+		})
+	end
+	return list
+end
+
 function BountyService.addBountyProgress(player, kind, amount)
 	local state = PirateState.getState(player)
-	if not state then return end
+	if not state then
+		return
+	end
 	state.bounties[kind] = (state.bounties[kind] or 0) + (amount or 1)
 	BountyService.checkBountyCompletion(player)
 end
 
 function BountyService.checkBountyCompletion(player)
 	local state = PirateState.getState(player)
-	if not state then return end
+	if not state then
+		return
+	end
 	for _, bounty in ipairs(BountyService.BOUNTIES) do
 		if not state.bountiesDone[bounty.id] then
-			local progress = 0
-			if bounty.kind == "index" then
-				progress = PirateState.getFoundCount(player)
-			elseif bounty.kind == "ownEpic" or bounty.kind == "ownMythic" then
-				progress = BountyService.countOwnedRarity(player, bounty.kind)
-			else
-				progress = state.bounties[bounty.kind] or 0
-			end
+			local progress = computeProgress(player, bounty)
 			if progress >= bounty.target then
 				state.bountiesDone[bounty.id] = true
 				PirateState.addCash(player, bounty.reward)
@@ -94,7 +108,10 @@ function BountyService.checkBountyCompletion(player)
 					text = "BOUNTY DONE: " .. bounty.text .. " +" .. BootyCatalog.formatMoney(bounty.reward),
 					reward = bounty.reward,
 				})
-				PirateState.broadcast(player, { type = "bounties", list = BountyService.getBountyList(player) })
+				PirateState.broadcast(player, {
+					type = "bounties",
+					list = BountyService.getBountyList(player),
+				})
 			end
 		end
 	end

@@ -1,8 +1,6 @@
--- TreasureChuteService: brainrots sail out of the wrecked galleon, ride the
--- glowing treasure chute past the docks, and can be bought before they sail
--- off the end. Buying carries the brainrot home to the buyer's deck.
-local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local TreasureChuteService = {}
 
 local BootyCatalog = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("BootyCatalog"))
 local RigBuilder = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("RigBuilder"))
@@ -11,16 +9,46 @@ local PirateState = require(script.Parent.PirateState)
 local BountyService = require(script.Parent.BountyService)
 local PlunderService = require(script.Parent.PlunderService)
 
-local TreasureChuteService = {}
-TreasureChuteService.riders = {}
-TreasureChuteService.spawnInterval = 6
+local riders = {}
+local CHUTE_LENGTH = (LagoonLayout.CHUTE_END - LagoonLayout.CHUTE_START).Magnitude
+
+local function getAnchorPart(model)
+	if model.PrimaryPart then
+		return model.PrimaryPart
+	end
+	return model:FindFirstChildWhichIsA("BasePart")
+end
+
+local function chutePositionAt(progress)
+	return LagoonLayout.CHUTE_START:Lerp(LagoonLayout.CHUTE_END, progress / CHUTE_LENGTH)
+end
+
+local function landOnPedestal(player, def, mutation, slot, model)
+	local state = PirateState.getState(player)
+	if not state then
+		if model then
+			model:Destroy()
+		end
+		return
+	end
+	local placeModel = model
+	if not placeModel or not placeModel.Parent then
+		local income = BootyCatalog.calculateBrainrotIncome(def, mutation, PirateState.getRebirthMultiplier(player))
+		placeModel = RigBuilder.buildBrainrotRig(def, mutation)
+		RigBuilder.attachOverheadBillboard(placeModel, def, mutation, "+" .. BootyCatalog.formatMoney(income) .. "/s")
+		placeModel.Parent = workspace
+	end
+	PirateState.setPedestalModel(player, slot, placeModel)
+	PlunderService.attachStealClicker(placeModel, player, slot)
+	placeModel:PivotTo(CFrame.new(LagoonLayout.getPedestalPosition(state.base, slot)))
+end
 
 function TreasureChuteService.spawnConveyorBrainrot()
 	local rarity = BootyCatalog.rollRarityTier()
 	local def = BootyCatalog.pickRandomBrainrotOfRarity(rarity)
 	local mutation = BootyCatalog.rollMutationModifier()
-	local model = RigBuilder.buildBrainrotRig(def, mutation)
 	local price = BootyCatalog.getBrainrotCost(def, mutation)
+	local model = RigBuilder.buildBrainrotRig(def, mutation)
 	RigBuilder.attachOverheadBillboard(model, def, mutation, "BUY " .. BootyCatalog.formatMoney(price))
 	model:PivotTo(CFrame.new(LagoonLayout.CHUTE_START))
 	model.Parent = workspace
@@ -32,181 +60,201 @@ function TreasureChuteService.spawnConveyorBrainrot()
 		progress = 0,
 		bornAt = os.clock(),
 	}
-	local clicker = Instance.new("ClickDetector")
-	clicker.MaxActivationDistance = 40
-	clicker.MouseClick:Connect(function(player)
-		TreasureChuteService.handleBuyBrainrotRequest(player, rider)
-	end)
-	clicker.Parent = model.PrimaryPart
-	table.insert(TreasureChuteService.riders, rider)
+	local anchor = getAnchorPart(model)
+	if anchor then
+		local clicker = Instance.new("ClickDetector")
+		clicker.MaxActivationDistance = 40
+		clicker.Parent = anchor
+		clicker.MouseClick:Connect(function(clickingPlayer)
+			TreasureChuteService.handleBuyBrainrotRequest(clickingPlayer, rider)
+		end)
+	end
+	table.insert(riders, rider)
 	return rider
 end
 
 function TreasureChuteService.stepConveyorMovement(dt)
-	local now = os.clock()
-	for i = #TreasureChuteService.riders, 1, -1 do
-		local rider = TreasureChuteService.riders[i]
+	local i = 1
+	while i <= #riders do
+		local rider = riders[i]
 		rider.progress += LagoonLayout.CHUTE_SPEED * dt
-		local total = (LagoonLayout.CHUTE_END - LagoonLayout.CHUTE_START).Magnitude
-		if rider.progress >= total or now - rider.bornAt > LagoonLayout.CHUTE_LIFETIME then
+		local age = os.clock() - rider.bornAt
+		if rider.progress >= CHUTE_LENGTH or age > LagoonLayout.CHUTE_LIFETIME then
 			TreasureChuteService.despawnConveyorBrainrot(i)
 		else
-			local t = rider.progress / total
-			local pos = LagoonLayout.CHUTE_START:Lerp(LagoonLayout.CHUTE_END, t)
-			rider.model:PivotTo(CFrame.new(pos))
+			if rider.model and rider.model.Parent then
+				rider.model:PivotTo(CFrame.new(chutePositionAt(rider.progress)))
+			end
+			i += 1
 		end
 	end
 end
 
 function TreasureChuteService.despawnConveyorBrainrot(index)
-	local rider = TreasureChuteService.riders[index]
+	local rider = riders[index]
 	if rider and rider.model then
 		rider.model:Destroy()
 	end
-	table.remove(TreasureChuteService.riders, index)
+	table.remove(riders, index)
+end
+
+function TreasureChuteService.carryBrainrotHome(player, def, mutation, slot)
+	local state = PirateState.getState(player)
+	if not state then
+		return
+	end
+	local income = BootyCatalog.calculateBrainrotIncome(def, mutation, PirateState.getRebirthMultiplier(player))
+	local model = RigBuilder.buildBrainrotRig(def, mutation)
+	RigBuilder.attachOverheadBillboard(model, def, mutation, "+" .. BootyCatalog.formatMoney(income) .. "/s")
+	model.Parent = workspace
+	local character = player.Character
+	if not character then
+		landOnPedestal(player, def, mutation, slot, model)
+		return
+	end
+	state.carrying = { defId = def.id, mutation = mutation, slot = slot, model = model }
+	PirateState.broadcast(player, {
+		type = "carrying",
+		name = def.name,
+		income = income,
+		stolen = false,
+	})
+	PirateState.broadcastAll({
+		type = "feed",
+		text = player.Name .. " bought " .. def.name .. "!",
+		color = "green",
+	})
+	local startTime = os.clock()
+	local reached = false
+	while os.clock() - startTime < 25 do
+		local currentState = PirateState.getState(player)
+		if not currentState or not currentState.carrying or currentState.carrying.model ~= model then
+			break
+		end
+		local char = player.Character
+		if not char then
+			break
+		end
+		local hrp = char:FindFirstChild("HumanoidRootPart")
+		if not hrp then
+			break
+		end
+		model:PivotTo(CFrame.new(hrp.Position + Vector3.new(0, 4, 0)))
+		local pedestalPos = LagoonLayout.getPedestalPosition(currentState.base, slot)
+		if (hrp.Position - pedestalPos).Magnitude <= 10 then
+			reached = true
+			break
+		end
+		task.wait(0.1)
+	end
+	local finalState = PirateState.getState(player)
+	if finalState and finalState.carrying and finalState.carrying.model == model then
+		finalState.carrying = nil
+	end
+	PirateState.broadcast(player, {
+		type = "carrying",
+		name = nil,
+		income = 0,
+		stolen = false,
+	})
+	landOnPedestal(player, def, mutation, slot, model)
+	if reached then
+		PirateState.broadcast(player, {
+			type = "feed",
+			text = def.name .. " is on your deck!",
+			color = "green",
+		})
+	else
+		PirateState.broadcast(player, {
+			type = "feed",
+			text = def.name .. " took the scenic route — it is on your deck!",
+			color = "green",
+		})
+	end
 end
 
 function TreasureChuteService.handleBuyBrainrotRequest(player, rider)
-	for i, other in ipairs(TreasureChuteService.riders) do
-		if other == rider then
-			local state = PirateState.getState(player)
-			if not state then return end
-			if state.carrying then
-				PirateState.broadcast(player, { type = "feed", text = "Carry the brainrot home first!", color = "red" })
-				return
-			end
-			if not player.Character then
-				return
-			end
-			local slot = PirateState.getFreeSlot(player)
-			if not slot then
-				PirateState.broadcast(player, { type = "feed", text = "Your deck is FULL! Buy a pedestal first.", color = "red" })
-				return
-			end
-			if not PirateState.spendCash(player, rider.price) then
-				PirateState.broadcast(player, { type = "feed", text = "Not enough doubloons for " .. rider.def.name .. "!", color = "red" })
-				return
-			end
-			-- Ownership is recorded at purchase, not after the walk home: a
-			-- bought brainrot used to count for nothing (no slot, no Log
-			-- tile, no bounty) unless the player walked it to the pedestal
-			-- within 25s — and the 25s timeout silently refunded it. Players
-			-- who bought but did not know to walk home saw "Buy your first
-			-- brainrot 0/1" and an empty Log forever. The carry home below
-			-- is now visual only.
-			if not PirateState.assignBrainrotToSlot(player, slot, rider.def.id, rider.mutation) then
-				PirateState.addCash(player, rider.price)
-				PirateState.broadcast(player, { type = "feed", text = "Could not place " .. rider.def.name .. " — refunded!", color = "red" })
-				return
-			end
-			BountyService.addBountyProgress(player, "buy", 1)
-			BountyService.checkBountyCompletion(player)
-			TreasureChuteService.despawnConveyorBrainrot(i)
-			TreasureChuteService.carryBrainrotHome(player, rider.def, rider.mutation, slot)
-			return
-		end
-	end
-end
-
--- Lands a bought brainrot's model on its pedestal. Builds a fresh model if
--- the carry model is gone (Kraken Surge drops it mid-carry); destroys it if
--- the player already left. The slot itself was assigned at purchase, so the
--- model is only the visible half of an owned brainrot.
-local function landOnPedestal(player, model, def, mutation, slot)
-	local state = PirateState.getState(player)
-	if not state then
-		if model then
-			model:Destroy()
-		end
-		return
-	end
-	if not model or model.Parent == nil then
-		model = RigBuilder.buildBrainrotRig(def, mutation)
-		local income = BootyCatalog.calculateBrainrotIncome(def, mutation, PirateState.getRebirthMultiplier(player))
-		RigBuilder.attachOverheadBillboard(model, def, mutation, "+" .. BootyCatalog.formatMoney(income) .. "/s")
-		model.Parent = workspace
-	end
-	PirateState.setPedestalModel(player, slot, model)
-	PlunderService.attachStealClicker(model, player, slot)
-	model:PivotTo(CFrame.new(LagoonLayout.getPedestalPosition(state.base, slot)))
-end
-
--- A bought brainrot walks home over the buyer's head, then lands on a pedestal.
--- The carry is visual only: ownership (slot, Captain's Log, buy bounty) is
--- recorded at purchase in handleBuyBrainrotRequest, so the brainrot always
--- lands — walked home or timed out — instead of being refunded.
-function TreasureChuteService.carryBrainrotHome(player, def, mutation, slot)
-	local character = player.Character
-	local state = PirateState.getState(player)
-	if not state or not character then
-		landOnPedestal(player, nil, def, mutation, slot)
-		return
-	end
-	local model = RigBuilder.buildBrainrotRig(def, mutation)
-	local income = BootyCatalog.calculateBrainrotIncome(def, mutation, PirateState.getRebirthMultiplier(player))
-	RigBuilder.attachOverheadBillboard(model, def, mutation, "+" .. BootyCatalog.formatMoney(income) .. "/s")
-	model.Parent = workspace
-	state.carrying = { defId = def.id, mutation = mutation, slot = slot, model = model }
-	PirateState.broadcast(player, { type = "carrying", name = def.name, income = income })
-	PirateState.broadcastAll({ type = "feed", text = player.Name .. " bought " .. def.name .. "!", color = "green" })
-	local humanoidRoot = nil
-	local target = LagoonLayout.getPedestalPosition(state.base, slot)
-	local waited = 0
-	local reached = false
-	while waited < 25 do
-		if not state.carrying or state.carrying.model ~= model or model.Parent == nil then
+	local riderIndex = nil
+	for i, r in ipairs(riders) do
+		if r == rider then
+			riderIndex = i
 			break
 		end
-		local liveCharacter = player.Character
-		humanoidRoot = liveCharacter and liveCharacter:FindFirstChild("HumanoidRootPart")
-		if humanoidRoot then
-			local carryPos = humanoidRoot.Position + Vector3.new(0, 4, 0)
-			model:PivotTo(CFrame.new(carryPos))
-			if (humanoidRoot.Position - target).Magnitude < 10 then
-				reached = true
-				break
-			end
-		end
-		task.wait(0.1)
-		waited += 0.1
 	end
-	state.carrying = nil
-	PirateState.broadcast(player, { type = "carrying", name = nil })
-	landOnPedestal(player, model, def, mutation, slot)
-	if reached then
-		PirateState.broadcast(player, { type = "feed", text = def.name .. " is on your deck!", color = "green" })
-	else
-		PirateState.broadcast(player, { type = "feed", text = def.name .. " took the scenic route — it is on your deck!", color = "green" })
+	if not riderIndex then
+		return
 	end
+	local state = PirateState.getState(player)
+	if not state then
+		return
+	end
+	if state.carrying then
+		PirateState.broadcast(player, {
+			type = "feed",
+			text = "Carry the brainrot home first!",
+			color = "red",
+		})
+		return
+	end
+	local character = player.Character
+	if not character then
+		return
+	end
+	local slot = PirateState.getFreeSlot(player)
+	if not slot then
+		PirateState.broadcast(player, {
+			type = "feed",
+			text = "Your deck is FULL! Buy a pedestal first.",
+			color = "red",
+		})
+		return
+	end
+	local price = rider.price
+	if not PirateState.spendCash(player, price) then
+		PirateState.broadcast(player, {
+			type = "feed",
+			text = "Not enough doubloons for " .. rider.def.name .. "!",
+			color = "red",
+		})
+		return
+	end
+	local placed = PirateState.assignBrainrotToSlot(player, slot, rider.def.id, rider.mutation)
+	if not placed then
+		PirateState.addCash(player, price)
+		PirateState.broadcast(player, {
+			type = "feed",
+			text = "Could not place " .. rider.def.name .. " — refunded!",
+			color = "red",
+		})
+		return
+	end
+	BountyService.addBountyProgress(player, "buy", 1)
+	TreasureChuteService.despawnConveyorBrainrot(riderIndex)
+	TreasureChuteService.carryBrainrotHome(player, rider.def, rider.mutation, slot)
 end
 
 function TreasureChuteService.startChuteLoop()
-	-- Pre-populate the chute at boot, spread along its length, so it is
-	-- never empty in the first seconds of a fresh server (a photo taken
-	-- right after joining used to show a bare chute even though spawns
-	-- were working).
-	do
-		local total = (LagoonLayout.CHUTE_END - LagoonLayout.CHUTE_START).Magnitude
-		for _, progress in ipairs({ 0, 45, 90 }) do
-			local rider = TreasureChuteService.spawnConveyorBrainrot()
-			rider.progress = progress
-			local t = progress / total
-			rider.model:PivotTo(CFrame.new(LagoonLayout.CHUTE_START:Lerp(LagoonLayout.CHUTE_END, t)))
+	for _, progress in ipairs({ 0, 45, 90 }) do
+		local rider = TreasureChuteService.spawnConveyorBrainrot()
+		rider.progress = progress
+		if rider.model and rider.model.Parent then
+			rider.model:PivotTo(CFrame.new(chutePositionAt(progress)))
 		end
 	end
 	task.spawn(function()
 		while true do
-			task.wait(TreasureChuteService.spawnInterval)
+			task.wait(6)
 			TreasureChuteService.spawnConveyorBrainrot()
 		end
 	end)
 	task.spawn(function()
-		local last = os.clock()
+		local lastTime = os.clock()
 		while true do
 			task.wait(0.1)
 			local now = os.clock()
-			TreasureChuteService.stepConveyorMovement(now - last)
-			last = now
+			local dt = now - lastTime
+			lastTime = now
+			TreasureChuteService.stepConveyorMovement(dt)
 		end
 	end)
 end

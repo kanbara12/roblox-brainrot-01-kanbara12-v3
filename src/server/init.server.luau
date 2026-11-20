@@ -1,22 +1,14 @@
--- init.server: boots Rotbeard's Lagoon. Creates the LagoonAction remote,
--- paints the world sign and pedestal numbers, fills the rival crew's deck,
--- starts every loop, and wires player join/leave plus client actions.
-local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Players = game:GetService("Players")
 
-local LagoonAction = Instance.new("RemoteEvent")
-LagoonAction.Name = "LagoonAction"
-LagoonAction.Parent = ReplicatedStorage
+local actionRemote = Instance.new("RemoteEvent")
+actionRemote.Name = "LagoonAction"
+actionRemote.Parent = ReplicatedStorage
 
--- Created here, before any require, so the client never waits on a remote
--- that only appears after the require chain (see PirateState).
-local LagoonUpdate = Instance.new("RemoteEvent")
-LagoonUpdate.Name = "LagoonUpdate"
-LagoonUpdate.Parent = ReplicatedStorage
+local updateRemote = Instance.new("RemoteEvent")
+updateRemote.Name = "LagoonUpdate"
+updateRemote.Parent = ReplicatedStorage
 
-local BootyCatalog = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("BootyCatalog"))
-local RigBuilder = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("RigBuilder"))
-local LagoonLayout = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("LagoonLayout"))
 local PirateState = require(script.PirateState)
 local TreasureChuteService = require(script.TreasureChuteService)
 local DoubloonService = require(script.DoubloonService)
@@ -28,10 +20,67 @@ local UpgradeService = require(script.UpgradeService)
 local BountyService = require(script.BountyService)
 local Stagehand = require(script.Stagehand)
 
-RigBuilder.paintLagoonSign()
-for _, base in ipairs({ "A", "B", "R" }) do
-	RigBuilder.paintPedestalNumbers(base)
+local Shared = ReplicatedStorage:WaitForChild("Shared")
+local BootyCatalog = require(Shared:WaitForChild("BootyCatalog"))
+local RigBuilder = require(Shared:WaitForChild("RigBuilder"))
+local LagoonLayout = require(Shared:WaitForChild("LagoonLayout"))
+
+local function sendSnapshot(player)
+	local state = PirateState.getState(player)
+	if not state then
+		return
+	end
+	PirateState.broadcast(player, {
+		type = "snapshot",
+		cash = state.cash,
+		income = PirateState.getIncomePerSecond(player),
+		rebirths = state.rebirths,
+		multiplier = PirateState.getRebirthMultiplier(player),
+		slots = state.slots,
+		upgrades = state.upgrades,
+		bounties = BountyService.getBountyList(player),
+		found = state.found,
+		base = state.base,
+		remaining = math.floor(PirateState.getBaseLockRemaining(player)),
+	})
 end
+
+local function setupCharacter(player)
+	task.wait(1)
+	UpgradeService.applyAllUpgradesToCharacter(player)
+	local state = PirateState.getState(player)
+	if state and state.rebirths > 0 then
+		LegendService.applyRebirthAura(player)
+	end
+end
+
+local function onPlayerAdded(player)
+	PirateState.initPlayerState(player)
+	player.CharacterAdded:Connect(function()
+		setupCharacter(player)
+	end)
+	if player.Character then
+		task.spawn(function()
+			setupCharacter(player)
+		end)
+	end
+	task.delay(1, function()
+		sendSnapshot(player)
+	end)
+end
+
+Players.PlayerAdded:Connect(onPlayerAdded)
+Players.PlayerRemoving:Connect(function(player)
+	PirateState.removePlayerState(player)
+end)
+for _, player in ipairs(Players:GetPlayers()) do
+	onPlayerAdded(player)
+end
+
+RigBuilder.paintLagoonSign()
+RigBuilder.paintPedestalNumbers("A")
+RigBuilder.paintPedestalNumbers("B")
+RigBuilder.paintPedestalNumbers("R")
 
 RivalCrewService.populateSoloRivalPlot()
 TreasureChuteService.startChuteLoop()
@@ -45,65 +94,32 @@ task.spawn(function()
 	end
 end)
 
-local function sendSnapshot(player)
-	local state = PirateState.getState(player)
-	if not state then return end
-	PirateState.broadcast(player, {
-		type = "snapshot",
-		cash = state.cash,
-		income = PirateState.getIncomePerSecond(player),
-		rebirths = state.rebirths,
-		multiplier = PirateState.getRebirthMultiplier(player),
-		slots = state.slots,
-		upgrades = state.upgrades,
-		bounties = BountyService.getBountyList(player),
-		found = state.found,
-		base = state.base,
-		remaining = PirateState.getBaseLockRemaining(player),
-	})
-end
-
-local function onPlayerAdded(player)
-	PirateState.initPlayerState(player)
-	player.CharacterAdded:Connect(function(character)
-		task.wait(1)
-		UpgradeService.applyAllUpgradesToCharacter(player)
-		local st = PirateState.getState(player)
-		if st and st.rebirths > 0 then
-			LegendService.applyRebirthAura(player)
-		end
-	end)
-	task.wait(1)
-	sendSnapshot(player)
-end
-
-Players.PlayerAdded:Connect(onPlayerAdded)
-Players.PlayerRemoving:Connect(function(player)
-	PirateState.removePlayerState(player)
-end)
-for _, player in ipairs(Players:GetPlayers()) do
-	task.spawn(onPlayerAdded, player)
-end
-
-LagoonAction.OnServerEvent:Connect(function(player, action, arg1, arg2)
+actionRemote.OnServerEvent:Connect(function(player, action, arg1, arg2)
 	if action == "snapshot" then
 		sendSnapshot(player)
 	elseif action == "lock" then
 		PlunderService.activateBaseLock(player)
 	elseif action == "slap" then
+		local character = player.Character
+		if not character then
+			return
+		end
+		local hrp = character:FindFirstChild("HumanoidRootPart")
+		if not hrp then
+			return
+		end
 		local nearest = nil
 		local nearestDist = 14
-		local myChar = player.Character
-		local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")
-		if myRoot then
-			for _, other in ipairs(Players:GetPlayers()) do
-				if other ~= player and other.Character then
-					local root = other.Character:FindFirstChild("HumanoidRootPart")
-					if root then
-						local dist = (root.Position - myRoot.Position).Magnitude
-						if dist < nearestDist then
-							nearestDist = dist
+		for _, other in ipairs(Players:GetPlayers()) do
+			if other ~= player then
+				local otherChar = other.Character
+				if otherChar then
+					local otherHrp = otherChar:FindFirstChild("HumanoidRootPart")
+					if otherHrp then
+						local dist = (hrp.Position - otherHrp.Position).Magnitude
+						if dist <= nearestDist then
 							nearest = other
+							nearestDist = dist
 						end
 					end
 				end
@@ -113,7 +129,9 @@ LagoonAction.OnServerEvent:Connect(function(player, action, arg1, arg2)
 			PlunderService.handleSlapPlayer(player, nearest)
 		end
 	elseif action == "rebirth" then
-		LegendService.performPlayerRebirth(player)
+		if LegendService.canPlayerRebirth(player) then
+			LegendService.performPlayerRebirth(player)
+		end
 	elseif action == "buyUpgrade" then
 		UpgradeService.buyUpgrade(player, arg1)
 	elseif action == "stealFrom" then
