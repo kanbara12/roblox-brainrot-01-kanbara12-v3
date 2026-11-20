@@ -1,18 +1,16 @@
 -- BountyService.luau
--- Twelve bounties with doubloon rewards. Progress is counted by the
--- services that own each action, and completion pays out at once.
+-- Twelve bounties with doubloon rewards. Progress is counted by the services
+-- that own each action; this module owns the table, the list, and completion.
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Shared = ReplicatedStorage:WaitForChild("Shared")
 
 local PirateState = require(script.Parent.PirateState)
-local BootyCatalog = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("BootyCatalog"))
+local BootyCatalog = require(Shared:WaitForChild("BootyCatalog"))
 
 local BountyService = {}
 
--- The twelve bounties: id, kind, target, text, reward.
--- Kinds: buy, steal, lock, survive, rebirth, upgrades are counters on the
--- player state. index is the Captain's Log found-count. ownEpic / ownMythic
--- are computed from the rarities on the player's deck.
+-- The twelve bounties. Fields: id, kind, target, text, reward (doubloons).
 BountyService.BOUNTIES = {
 	{ id = "buy1", kind = "buy", target = 1, text = "Buy your first brainrot", reward = 100 },
 	{ id = "buy5", kind = "buy", target = 5, text = "Buy 5 brainrots", reward = 500 },
@@ -28,59 +26,58 @@ BountyService.BOUNTIES = {
 	{ id = "upgrade3", kind = "upgrades", target = 3, text = "Buy 3 upgrades", reward = 1500 },
 }
 
--- One entry per bounty: id, text, target, reward, current progress, and
--- whether it is done. Progress is computed per kind: index reads the
--- player's found count, ownEpic / ownMythic read the owned-rarity check,
--- every other kind reads the player's counter for that kind.
-function BountyService.getBountyList(player)
-	local state = PirateState.getState(player)
-	local list = {}
-	for _, bounty in ipairs(BountyService.BOUNTIES) do
-		local progress = 0
-		if state then
-			if bounty.kind == "index" then
-				progress = PirateState.getFoundCount(player)
-			elseif bounty.kind == "ownEpic" or bounty.kind == "ownMythic" then
-				progress = BountyService.countOwnedRarity(player, bounty.kind)
-			else
-				progress = state.bounties[bounty.kind] or 0
-			end
+-- Returns the 1-based index of a rarity name in the rarity ladder, or 0.
+local function rarityIndex(rarityName)
+	for index, name in ipairs(BootyCatalog.RARITY_ORDER) do
+		if name == rarityName then
+			return index
 		end
-		local done = false
-		if state and state.bountiesDone[bounty.id] then
-			done = true
-		end
-		table.insert(list, {
-			id = bounty.id,
-			text = bounty.text,
-			target = bounty.target,
-			reward = bounty.reward,
-			progress = progress,
-			done = done,
-		})
 	end
-	return list
+	return 0
 end
 
--- Returns 1 when any brainrot on the player's deck has a rarity index at
--- or above the wanted index (EPIC = 3 for ownEpic, MYTHIC = 5 for
--- ownMythic), else 0. Returns 0 when the player has no state.
-function BountyService.countOwnedRarity(player, kind)
+-- Computes the progress for one bounty kind for a player.
+-- index -> found count; ownEpic / ownMythic -> owned-rarity check;
+-- every other kind -> the player's counter for that kind.
+local function progressForKind(player, kind)
 	local state = PirateState.getState(player)
 	if not state then
 		return 0
 	end
-	local wantedIndex = 3
-	if kind == "ownMythic" then
-		wantedIndex = 5
+	if kind == "index" then
+		return PirateState.getFoundCount(player)
 	end
-	for slot = 1, 8 do
-		local entry = state.slots[slot]
-		if entry then
-			local def = BootyCatalog.getBrainrotDefinition(entry.defId)
-			if def then
-				local rarityIndex = table.find(BootyCatalog.RARITY_ORDER, def.rarity)
-				if rarityIndex and rarityIndex >= wantedIndex then
+	if kind == "ownEpic" or kind == "ownMythic" then
+		return BountyService.countOwnedRarity(player, kind)
+	end
+	local counters = state.bounties
+	if not counters then
+		return 0
+	end
+	return counters[kind] or 0
+end
+
+-- Returns 1 if any brainrot on the player's deck has a rarity index at or
+-- above the wanted index (EPIC = 3 for ownEpic, MYTHIC = 5 for ownMythic),
+-- else 0. Returns 0 if the player has no state.
+function BountyService.countOwnedRarity(player, kind)
+	local wantedIndex = 0
+	if kind == "ownEpic" then
+		wantedIndex = 3
+	elseif kind == "ownMythic" then
+		wantedIndex = 5
+	else
+		return 0
+	end
+	local state = PirateState.getState(player)
+	if not state then
+		return 0
+	end
+	for _, slot in ipairs(state.slots) do
+		if slot and slot.defId then
+			local def = BootyCatalog.getBrainrotDefinition(slot.defId)
+			if def and def.rarity then
+				if rarityIndex(def.rarity) >= wantedIndex then
 					return 1
 				end
 			end
@@ -89,52 +86,73 @@ function BountyService.countOwnedRarity(player, kind)
 	return 0
 end
 
--- Adds amount (default 1) to the player's counter for a kind, then checks
--- whether any bounty just completed.
-function BountyService.addBountyProgress(player, kind, amount)
+-- Returns the bounty list for a player: one entry per bounty with id, text,
+-- target, reward, current progress, and whether it is done.
+function BountyService.getBountyList(player)
 	local state = PirateState.getState(player)
-	if not state then
-		return
+	local doneSet = state and state.bountiesDone or {}
+	local list = {}
+	for _, bounty in ipairs(BountyService.BOUNTIES) do
+		table.insert(list, {
+			id = bounty.id,
+			text = bounty.text,
+			target = bounty.target,
+			reward = bounty.reward,
+			progress = progressForKind(player, bounty.kind),
+			done = doneSet[bounty.id] == true,
+		})
 	end
-	amount = amount or 1
-	state.bounties[kind] = (state.bounties[kind] or 0) + amount
-	BountyService.checkBountyCompletion(player)
+	return list
 end
 
--- For every bounty not yet done, computes progress the same way as
--- getBountyList. When progress reaches the target, marks it done, pays the
--- reward into the player's cash at once, broadcasts a bounty message, and
--- broadcasts a refreshed bounty list.
+-- Checks every bounty that is not yet done. When a bounty's progress reaches
+-- its target, it is marked done, the reward is paid into cash at once, a
+-- bounty message is broadcast, and the refreshed bounty list is broadcast.
 function BountyService.checkBountyCompletion(player)
 	local state = PirateState.getState(player)
 	if not state then
 		return
 	end
+	if not state.bountiesDone then
+		state.bountiesDone = {}
+	end
+	local changed = false
 	for _, bounty in ipairs(BountyService.BOUNTIES) do
-		if not state.bountiesDone[bounty.id] then
-			local progress = 0
-			if bounty.kind == "index" then
-				progress = PirateState.getFoundCount(player)
-			elseif bounty.kind == "ownEpic" or bounty.kind == "ownMythic" then
-				progress = BountyService.countOwnedRarity(player, bounty.kind)
-			else
-				progress = state.bounties[bounty.kind] or 0
-			end
+		if state.bountiesDone[bounty.id] ~= true then
+			local progress = progressForKind(player, bounty.kind)
 			if progress >= bounty.target then
 				state.bountiesDone[bounty.id] = true
+				changed = true
 				PirateState.addCash(player, bounty.reward)
 				PirateState.broadcast(player, {
 					type = "bounty",
 					text = "BOUNTY DONE: " .. bounty.text .. " +" .. BootyCatalog.formatMoney(bounty.reward),
 					reward = bounty.reward,
 				})
-				PirateState.broadcast(player, {
-					type = "bounties",
-					list = BountyService.getBountyList(player),
-				})
 			end
 		end
 	end
+	if changed then
+		PirateState.broadcast(player, {
+			type = "bounties",
+			list = BountyService.getBountyList(player),
+		})
+	end
+end
+
+-- Adds amount (default 1) to the player's counter for a kind, then checks
+-- whether any bounty completed.
+function BountyService.addBountyProgress(player, kind, amount)
+	local state = PirateState.getState(player)
+	if not state then
+		return
+	end
+	if not state.bounties then
+		state.bounties = {}
+	end
+	local add = amount or 1
+	state.bounties[kind] = (state.bounties[kind] or 0) + add
+	BountyService.checkBountyCompletion(player)
 end
 
 return BountyService

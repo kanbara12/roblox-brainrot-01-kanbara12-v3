@@ -1,12 +1,14 @@
 -- Stagehand.luau
--- TOUR screenshot staging. Stages each TOUR screenshot for the first
--- player in the server. The kit's TOUR steps call stageScreenshot with a
--- shot name ("hero", "chute", "index", or "kraken"). It seeds cash, fills
--- showcase pedestals, spawns chute riders, marks Log tiles, and sets the
--- event state for the shot.
+-- TOUR screenshot staging. Stages each TOUR screenshot for the first player
+-- in the server. The kit's TOUR steps call stageScreenshot with a shot name
+-- ("hero", "chute", "index", or "kraken"). It seeds cash, fills showcase
+-- pedestals, spawns chute riders, marks Log tiles, and sets the event state
+-- for the shot.
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Workspace = game:GetService("Workspace")
+local Shared = ReplicatedStorage:WaitForChild("Shared")
 
 local PirateState = require(script.Parent.PirateState)
 local TreasureChuteService = require(script.Parent.TreasureChuteService)
@@ -14,14 +16,15 @@ local PlunderService = require(script.Parent.PlunderService)
 local StormService = require(script.Parent.StormService)
 local BountyService = require(script.Parent.BountyService)
 local LegendService = require(script.Parent.LegendService)
-local BootyCatalog = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("BootyCatalog"))
-local RigBuilder = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("RigBuilder"))
-local LagoonLayout = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("LagoonLayout"))
+local BootyCatalog = require(Shared:WaitForChild("BootyCatalog"))
+local RigBuilder = require(Shared:WaitForChild("RigBuilder"))
+local LagoonLayout = require(Shared:WaitForChild("LagoonLayout"))
 
 local Stagehand = {}
 
--- The six showcase pedestals for the top deck, chosen so their combined
--- income at rebirth x4 is about $1.31M/s ($2.63M/s during Golden Tide x2).
+-- The six showcase entries for the top deck (slot, defId, mutation).
+-- Combined income at rebirth x4 is about $1.31M/s ($2.63M/s during
+-- Golden Tide x2).
 local TOP_DECK = {
 	{ slot = 1, defId = 23, mutation = "GOLDEN" },
 	{ slot = 2, defId = 25, mutation = "GOLDEN" },
@@ -31,13 +34,18 @@ local TOP_DECK = {
 	{ slot = 6, defId = 22, mutation = "NONE" },
 }
 
-local STAGED_CASH = 2500000
-local STAGED_REBIRTHS = 2
-local CARRY_HEIGHT = 4
+-- Returns the first player in the server, or nil.
+function Stagehand.getFirstPlayer()
+	local list = Players:GetPlayers()
+	if #list == 0 then
+		return nil
+	end
+	return list[1]
+end
 
--- Fills one showcase pedestal: clears the slot, assigns the brainrot to
--- it (which marks it found), builds the rig, computes income at the
--- player's rebirth multiplier, attaches an income billboard, places the
+-- Fills one showcase pedestal: clears the slot, assigns the brainrot to it
+-- (which marks it found), builds the rig, computes income at the player's
+-- rebirth multiplier, attaches a billboard reading "+<income>/s", places the
 -- model on the pedestal, records it as the slot's pedestal model, and
 -- attaches a steal clicker.
 function Stagehand.fillShowcasePedestal(player, slot, defId, mutation)
@@ -50,7 +58,8 @@ function Stagehand.fillShowcasePedestal(player, slot, defId, mutation)
 		return
 	end
 	PirateState.clearBaseSlot(player, slot)
-	if not PirateState.assignBrainrotToSlot(player, slot, defId, mutation) then
+	local assigned = PirateState.assignBrainrotToSlot(player, slot, defId, mutation)
+	if not assigned then
 		return
 	end
 	local income = BootyCatalog.calculateBrainrotIncome(def, mutation, PirateState.getRebirthMultiplier(player))
@@ -58,7 +67,7 @@ function Stagehand.fillShowcasePedestal(player, slot, defId, mutation)
 	RigBuilder.attachOverheadBillboard(model, def, mutation, "+" .. BootyCatalog.formatMoney(income) .. "/s")
 	local pedestalPos = LagoonLayout.getPedestalPosition(state.base, slot)
 	model:PivotTo(CFrame.new(pedestalPos))
-	model.Parent = workspace
+	model.Parent = Workspace
 	PirateState.setPedestalModel(player, slot, model)
 	PlunderService.attachStealClicker(model, player, slot)
 end
@@ -70,20 +79,10 @@ function Stagehand.fillTopDeck(player)
 	end
 end
 
--- The first player in the server, or nil when the server is empty.
-function Stagehand.getFirstPlayer()
-	local list = Players:GetPlayers()
-	if #list == 0 then
-		return nil
-	end
-	return list[1]
-end
-
--- Stages one shot. Returns false (with a warning) when there is no player
--- or the player has no state. Otherwise stages the shared wealth (cash
--- $2,500,000, rebirths 2 for income x4, golden rebirth aura), then the
--- per-shot staging, then pushes the full staged state to the HUD and
--- returns true.
+-- Stages one shot. Returns true on success, false when there is no player
+-- or the player has no state. First stages the shared wealth (cash
+-- $2,500,000, rebirths 2, golden aura, cash broadcast), then stages the
+-- shot-specific content, then pushes the full staged state to the HUD.
 function Stagehand.stageScreenshot(shot)
 	local player = Stagehand.getFirstPlayer()
 	if not player then
@@ -95,9 +94,8 @@ function Stagehand.stageScreenshot(shot)
 		warn("[Stagehand] Player has no state to stage for.")
 		return false
 	end
-	-- Shared wealth for every shot.
-	state.cash = STAGED_CASH
-	state.rebirths = STAGED_REBIRTHS
+	state.cash = 2500000
+	state.rebirths = 2
 	LegendService.applyRebirthAura(player)
 	PirateState.broadcast(player, {
 		type = "cash",
@@ -108,7 +106,9 @@ function Stagehand.stageScreenshot(shot)
 		Stagehand.fillTopDeck(player)
 		TreasureChuteService.spawnConveyorBrainrot()
 		TreasureChuteService.spawnConveyorBrainrot()
-		task.spawn(StormService.triggerGoldenTide)
+		task.spawn(function()
+			StormService.triggerGoldenTide()
+		end)
 	elseif shot == "chute" then
 		TreasureChuteService.spawnConveyorBrainrot()
 		TreasureChuteService.spawnConveyorBrainrot()
@@ -124,38 +124,42 @@ function Stagehand.stageScreenshot(shot)
 		local character = player.Character
 		if character then
 			character:PivotTo(CFrame.new(LagoonLayout.LIGHTHOUSE_TOP))
-			local def = BootyCatalog.getBrainrotDefinition(34)
-			if def then
-				local model = RigBuilder.buildBrainrotRig(def, "GHOST")
-				RigBuilder.attachOverheadBillboard(model, def, "GHOST", "STOLEN! RUN HOME!")
-				local rootPart = character:FindFirstChild("HumanoidRootPart")
-				if rootPart then
-					model:PivotTo(CFrame.new(rootPart.Position + Vector3.new(0, CARRY_HEIGHT, 0)))
-				end
-				model.Parent = workspace
-				local income = BootyCatalog.calculateBrainrotIncome(def, "GHOST", PirateState.getRebirthMultiplier(player))
-				state.carrying = { defId = 34, mutation = "GHOST", model = model }
-				PirateState.broadcast(player, {
-					type = "carrying",
-					name = def.name,
-					income = income,
-					stolen = true,
-				})
-			end
 		end
-		local wave = workspace:WaitForChild("SurgeWave")
-		wave.Transparency = 0.25
-		wave.CFrame = CFrame.new(0, 6, -40)
-		for i = 1, 5 do
-			local tentacle = workspace:WaitForChild("Tentacle" .. i)
-			tentacle.Transparency = 0
-			local pos = tentacle.CFrame.Position
-			tentacle.CFrame = CFrame.new(pos.X, 4, -100)
+		local def = BootyCatalog.getBrainrotDefinition(34)
+		if def then
+			local model = RigBuilder.buildBrainrotRig(def, "GHOST")
+			RigBuilder.attachOverheadBillboard(model, def, "GHOST", "STOLEN! RUN HOME!")
+			local root = character and character:FindFirstChild("HumanoidRootPart")
+			if root then
+				model:PivotTo(CFrame.new(root.Position + Vector3.new(0, 4, 0)))
+			else
+				model:PivotTo(CFrame.new(LagoonLayout.LIGHTHOUSE_TOP + Vector3.new(0, 4, 0)))
+			end
+			model.Parent = Workspace
+			local income = BootyCatalog.calculateBrainrotIncome(def, "GHOST", PirateState.getRebirthMultiplier(player))
+			state.carrying = { defId = 34, mutation = "GHOST", model = model }
+			PirateState.broadcast(player, {
+				type = "carrying",
+				name = def.name,
+				income = income,
+				stolen = true,
+			})
+		end
+		local wave = Workspace:FindFirstChild("SurgeWave")
+		if wave then
+			wave.Transparency = 0.25
+			wave.Position = Vector3.new(0, 6, -40)
+		end
+		for index = 1, 5 do
+			local tentacle = Workspace:FindFirstChild("Tentacle" .. index)
+			if tentacle then
+				tentacle.Transparency = 0
+				local pos = tentacle.Position
+				tentacle.Position = Vector3.new(pos.X, 4, -100)
+			end
 		end
 		StormService.setStagedEventBanner("kraken", "KRAKEN SURGE!", "GET TO HIGH GROUND! The wave is coming!", 6)
 	end
-	-- Push the full staged state to the HUD so the shot shows the staged
-	-- game even when the join snapshot was missed.
 	PirateState.broadcast(player, {
 		type = "cash",
 		cash = state.cash,
